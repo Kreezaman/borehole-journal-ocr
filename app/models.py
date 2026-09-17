@@ -39,11 +39,18 @@ class FooterData(BaseModel):
     sketch_notes: str = ""
 
 
+class OCRWarning(BaseModel):
+    field: str = ""
+    reason: str = ""
+    alternative: str = ""
+
+
 class RecognizedPage(BaseModel):
     header: HeaderData = Field(default_factory=HeaderData)
     rows: list[JournalRow] = Field(default_factory=lambda: [JournalRow() for _ in range(19)])
     footer: FooterData = Field(default_factory=FooterData)
     page_notes: str = ""
+    ocr_warnings: list[OCRWarning] = Field(default_factory=list)
     recognition_mode: Literal["none", "local", "cloud", "gemini"] = "none"
     alignment_quality: float = 0.0
 

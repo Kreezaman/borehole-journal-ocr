@@ -29,6 +29,8 @@ def append_corrections(
     def walk(old: object, new: object, field_path: str) -> None:
         if isinstance(old, dict) and isinstance(new, dict):
             for key in sorted(set(old) | set(new)):
+                if not field_path and key == "ocr_warnings":
+                    continue
                 walk(old.get(key), new.get(key), f"{field_path}.{key}" if field_path else key)
         elif isinstance(old, list) and isinstance(new, list):
             for index in range(max(len(old), len(new))):

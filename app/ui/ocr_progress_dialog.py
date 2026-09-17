@@ -17,6 +17,7 @@ class OCRProgressDialog(QDialog):
         super().__init__(parent)
         self.timeout_seconds = timeout_seconds
         self._last_message = ""
+        self._last_wait_attempt = ""
         self._elapsed = QElapsedTimer()
         self._timer = QTimer(self)
         self._timer.setInterval(250)
@@ -36,7 +37,7 @@ class OCRProgressDialog(QDialog):
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.note = QLabel(
             "Полоса движется, пока программа ожидает Gemini. "
-            "Gemini не сообщает точный процент выполнения."
+            "При временном лимите появится обратный отсчёт до автоматического повтора."
         )
         self.note.setWordWrap(True)
         self.log = QPlainTextEdit()
@@ -67,6 +68,11 @@ class OCRProgressDialog(QDialog):
         self._last_message = message
         self.stage_label.setText(message)
         seconds = max(0, self._elapsed.elapsed() // 1000) if self._elapsed.isValid() else 0
+        if message.startswith("⏳"):
+            attempt = message.split("(", 1)[-1] if "(" in message else message
+            if attempt == self._last_wait_attempt and "через 1 сек" not in message:
+                return
+            self._last_wait_attempt = attempt
         self.log.appendPlainText(f"{_clock(seconds)}  {message}")
 
     def finish(self) -> None:
@@ -79,7 +85,7 @@ class OCRProgressDialog(QDialog):
         remaining = max(0, self.timeout_seconds - elapsed)
         self.time_label.setText(
             f"Прошло: {_clock(elapsed)}    •    "
-            f"до автоматической остановки: {_clock(remaining)}"
+            f"предельное время операции: {_clock(remaining)}"
         )
 
     def reject(self) -> None:

@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import QSettings, QThreadPool, Qt
+from PySide6.QtCore import QThreadPool, Qt
 from PySide6.QtGui import QAction, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,11 +35,11 @@ from app.core.layout import FOOTER_RECTS, HEADER_RECTS, TABLE_X, TABLE_Y, nr, te
 from app.core.project_io import append_corrections, load_project, save_project
 from app.core.validation import ValidationIssue, validate_page
 from app.models import FooterData, HeaderData, JournalProject, JournalRow, ProjectPage, RecognizedPage
-from app.ocr.cloud_gemini import DEFAULT_GEMINI_MODEL, GEMINI_TIMEOUT_SECONDS, GeminiCloudOCR
+from app.ocr.cloud_gemini import GEMINI_PROGRESS_TIMEOUT_SECONDS, GeminiCloudOCR
 from app.ocr.local_process import run_local_ocr_process
 from app.ui.image_view import ImageView
 from app.ui.ocr_progress_dialog import OCRProgressDialog
-from app.ui.settings_dialog import SettingsDialog, get_api_key
+from app.ui.settings_dialog import SettingsDialog, get_api_key, get_gemini_model
 from app.ui.workers import FunctionWorker
 
 
@@ -63,6 +63,21 @@ ROW_FIELDS = [
     "sample_depth",
     "water",
 ]
+
+
+def _data_field_value(data: RecognizedPage, field: str) -> str | None:
+    if field.startswith("header."):
+        return getattr(data.header, field.split(".", 1)[1], None)
+    if field.startswith("footer."):
+        return getattr(data.footer, field.split(".", 1)[1], None)
+    if field.startswith("rows[") and "]." in field:
+        try:
+            row_index = int(field.split("[", 1)[1].split("]", 1)[0])
+            name = field.split("].", 1)[1]
+            return getattr(data.rows[row_index], name, None)
+        except (ValueError, IndexError):
+            return None
+    return None
 
 
 class MainWindow(QMainWindow):
@@ -333,16 +348,21 @@ class MainWindow(QMainWindow):
         for name, edit in self.header_edits.items():
             edit.setText(getattr(data.header, name))
             edit.setStyleSheet("")
+            edit.setToolTip("")
         rows = data.normalized_rows()
         for row_index, row in enumerate(rows):
             for column, field in enumerate(ROW_FIELDS):
                 item = self.table.item(row_index, column)
                 item.setText(getattr(row, field))
                 item.setBackground(QColor("white") if row_index % 2 == 0 else QColor("#f7fafc"))
+                item.setToolTip("")
         for name, edit in self.footer_edits.items():
             edit.setText(getattr(data.footer, name))
             edit.setStyleSheet("")
+            edit.setToolTip("")
         self.sketch_notes.setPlainText(data.footer.sketch_notes)
+        self.sketch_notes.setStyleSheet("")
+        self.sketch_notes.setToolTip("")
         self.page_notes.setPlainText(data.page_notes)
 
     def _data_from_form(self) -> RecognizedPage:
@@ -357,7 +377,7 @@ class MainWindow(QMainWindow):
             rows.append(JournalRow(**values))
         footer_values = {name: edit.text().strip() for name, edit in self.footer_edits.items()}
         footer_values["sketch_notes"] = self.sketch_notes.toPlainText().strip()
-        return RecognizedPage(
+        result = RecognizedPage(
             header=header,
             rows=rows,
             footer=FooterData(**footer_values),
@@ -365,6 +385,12 @@ class MainWindow(QMainWindow):
             recognition_mode=current.recognition_mode,
             alignment_quality=current.alignment_quality,
         )
+        result.ocr_warnings = [
+            warning
+            for warning in current.ocr_warnings
+            if _data_field_value(result, warning.field) == _data_field_value(current, warning.field)
+        ]
+        return result
 
     def _commit_current_page(self) -> None:
         if 0 <= self.current_index < len(self.project.pages):
@@ -386,7 +412,7 @@ class MainWindow(QMainWindow):
                 "Откройте «Настройки» и сохраните Gemini API-ключ.",
             )
             return
-        model = str(QSettings().value("gemini/model", DEFAULT_GEMINI_MODEL))
+        model = get_gemini_model()
         self._start_recognition(
             "Gemini OCR: подготовка изображения…",
             lambda progress: GeminiCloudOCR(key, model).recognize(
@@ -410,7 +436,7 @@ class MainWindow(QMainWindow):
         self._set_busy(True, message)
         if show_progress_dialog:
             self.ocr_progress_dialog = OCRProgressDialog(
-                self, timeout_seconds=GEMINI_TIMEOUT_SECONDS
+                self, timeout_seconds=GEMINI_PROGRESS_TIMEOUT_SECONDS
             )
             self.ocr_progress_dialog.start(message)
         worker = FunctionWorker(fn, with_progress=with_progress)
@@ -480,12 +506,22 @@ class MainWindow(QMainWindow):
                 name = issue.field.split(".", 1)[1]
                 if name in self.header_edits:
                     self.header_edits[name].setStyleSheet(f"background: {color};")
+                    self.header_edits[name].setToolTip(issue.message)
+            elif issue.field.startswith("footer."):
+                name = issue.field.split(".", 1)[1]
+                if name in self.footer_edits:
+                    self.footer_edits[name].setStyleSheet(f"background: {color};")
+                    self.footer_edits[name].setToolTip(issue.message)
+                elif name == "sketch_notes":
+                    self.sketch_notes.setStyleSheet(f"background: {color};")
+                    self.sketch_notes.setToolTip(issue.message)
             elif issue.field.startswith("rows["):
                 try:
                     row_index = int(issue.field.split("[", 1)[1].split("]", 1)[0])
                     field = issue.field.rsplit(".", 1)[1]
                     column = ROW_FIELDS.index(field)
                     self.table.item(row_index, column).setBackground(QColor(color))
+                    self.table.item(row_index, column).setToolTip(issue.message)
                 except (ValueError, IndexError):
                     pass
 

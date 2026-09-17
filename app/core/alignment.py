@@ -14,9 +14,14 @@ class AlignmentResult:
 
 
 class PageAligner:
-    def __init__(self, template_rgb: np.ndarray):
+    def __init__(self, template_rgb: np.ndarray, output_scale: float = 2.0):
+        if output_scale < 1.0:
+            raise ValueError("Масштаб результата выравнивания не может быть меньше 1")
         self.template_rgb = template_rgb
         self.height, self.width = template_rgb.shape[:2]
+        self.output_scale = output_scale
+        self.output_width = round(self.width * output_scale)
+        self.output_height = round(self.height * output_scale)
         self.template_gray = cv2.cvtColor(template_rgb, cv2.COLOR_RGB2GRAY)
         self.orb = cv2.ORB_create(nfeatures=5000, fastThreshold=7)
         self.template_kp, self.template_des = self.orb.detectAndCompute(self.template_gray, None)
@@ -36,16 +41,32 @@ class PageAligner:
                 if matrix is not None and mask is not None:
                     inliers = int(mask.sum())
                     quality = min(1.0, inliers / max(24.0, len(good) * 0.55))
+                    # Homography is estimated in the reference-template coordinate
+                    # system. Scale its destination instead of first warping to the
+                    # small 1293x895 template and enlarging a lossy result afterwards.
+                    output_matrix = np.array(
+                        [
+                            [self.output_scale, 0.0, 0.0],
+                            [0.0, self.output_scale, 0.0],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        dtype=np.float64,
+                    ) @ matrix
                     warped = cv2.warpPerspective(
                         page,
-                        matrix,
-                        (self.width, self.height),
+                        output_matrix,
+                        (self.output_width, self.output_height),
                         flags=cv2.INTER_CUBIC,
                         borderMode=cv2.BORDER_CONSTANT,
                         borderValue=(255, 255, 255),
                     )
                     return AlignmentResult(warped, quality, "homography")
-        resized = cv2.resize(page, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        interpolation = cv2.INTER_AREA if page.shape[1] > self.output_width else cv2.INTER_CUBIC
+        resized = cv2.resize(
+            page,
+            (self.output_width, self.output_height),
+            interpolation=interpolation,
+        )
         return AlignmentResult(resized, 0.2, "resize")
 
     @staticmethod

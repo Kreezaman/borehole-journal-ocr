@@ -28,12 +28,22 @@ def parse_number(value: str) -> float | None:
 
 def validate_page(page: RecognizedPage) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    for warning in page.ocr_warnings:
+        if not warning.field or not warning.reason:
+            continue
+        alternative = f"; возможно: {warning.alternative}" if warning.alternative else ""
+        issues.append(
+            ValidationIssue(
+                warning.field,
+                f"Gemini не уверен: {warning.reason}{alternative}",
+            )
+        )
     if not page.header.borehole_no.strip():
         issues.append(ValidationIssue("header.borehole_no", "Не указан номер скважины"))
     previous_to: float | None = None
     has_data = False
     for index, row in enumerate(page.normalized_rows()):
-        values = [getattr(row, field) for field in row.model_fields]
+        values = [getattr(row, field) for field in type(row).model_fields]
         if not any(value.strip() for value in values):
             continue
         has_data = True
