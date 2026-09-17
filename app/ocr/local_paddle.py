@@ -24,9 +24,12 @@ from app.ocr.base import OCRProvider
 
 class PaddleLocalOCR(OCRProvider):
     def __init__(self):
+        # oneDNN в некоторых сборках PaddlePaddle под Windows падает на Intel CPU.
+        # Отключаем его и PIR API ДО импорта paddleocr.
         os.environ["FLAGS_use_mkldnn"] = "0"
         os.environ["FLAGS_use_onednn"] = "0"
         os.environ["FLAGS_enable_pir_api"] = "0"
+        os.environ["FLAGS_enable_pir_in_executor"] = "0"
         try:
             import paddle
             paddle.set_flags({
@@ -106,23 +109,23 @@ class PaddleLocalOCR(OCRProvider):
                 setattr(rows[row_index], field_name, value)
 
         _emit(progress_callback, "Локальное OCR: распознавание подвала (10 из 10)…")
-footer_box = (0, max(0, round(690 * y_scale)), width, min(height, round(870 * y_scale)))
-footer_crop = _crop(aligned_rgb, footer_box)
-# Подвал самый широкий — разбиваем его на 3 горизонтальные части,
-# чтобы детектор не захлёбывался на полосе во всю ширину.
-footer_texts: list[str] = []
-footer_boxes: list[list[float]] = []
-chunks = 3
-chunk_w = footer_crop.shape[1] // chunks
-for _i in range(chunks):
-    cx1 = _i * chunk_w
-    cx2 = footer_crop.shape[1] if _i == chunks - 1 else (_i + 1) * chunk_w
-    piece = footer_crop[:, cx1:cx2]
-    piece_texts, piece_boxes = self._recognize_crop(piece)
-    for text, box in zip(piece_texts, piece_boxes):
-        footer_texts.append(text)
-        footer_boxes.append([box[0] + cx1, box[1], box[2] + cx1, box[3]])
-footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_box[1])
+        footer_box = (0, max(0, round(690 * y_scale)), width, min(height, round(870 * y_scale)))
+        footer_crop = _crop(aligned_rgb, footer_box)
+        # Подвал — самый широкий кусок. Режем на 3 части, чтобы детектор
+        # не захлёбывался на полосе во всю ширину страницы.
+        footer_texts: list[str] = []
+        footer_boxes: list[list[float]] = []
+        chunks = 3
+        chunk_w = footer_crop.shape[1] // chunks
+        for _i in range(chunks):
+            cx1 = _i * chunk_w
+            cx2 = footer_crop.shape[1] if _i == chunks - 1 else (_i + 1) * chunk_w
+            piece = footer_crop[:, cx1:cx2]
+            piece_texts, piece_boxes = self._recognize_crop(piece)
+            for text, box in zip(piece_texts, piece_boxes):
+                footer_texts.append(text)
+                footer_boxes.append([box[0] + cx1, box[1], box[2] + cx1, box[3]])
+        footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_box[1])
         footer_values = {
             name: _text_inside(footer_items, rect.pixels(width, height))
             for name, rect in FOOTER_RECTS.items()
@@ -139,9 +142,9 @@ footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_b
         if crop_rgb.size == 0:
             return [], []
         enhanced = _enhance_handwriting(crop_rgb)
-        height, width = crop_rgb.shape[:2]
-        base_scale = 2.5 if height < 400 else 2.0
-        max_scale = 3800.0 / max(width, 1)
+        crop_height, crop_width = crop_rgb.shape[:2]
+        base_scale = 2.5 if crop_height < 400 else 2.0
+        max_scale = 3800.0 / max(crop_width, 1)
         scale = max(1.0, min(base_scale, max_scale))
         enlarged = cv2.resize(enhanced, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         result = self.engine.predict(enlarged)
@@ -204,13 +207,6 @@ def _text_inside(items: list[tuple[str, list[float]]], region: tuple[int, int, i
         if x1 <= x_center <= x2 and y1 <= y_center <= y2 and text.strip():
             selected.append((box[1], box[0], text.strip()))
     return " ".join(item[2] for item in sorted(selected))
-
-
-def _interval_index(value: float, boundaries: list[int], scale: float) -> int | None:
-    for index in range(len(boundaries) - 1):
-        if boundaries[index] * scale <= value <= boundaries[index + 1] * scale:
-            return index
-    return None
 
 
 def _enhance_handwriting(image_rgb: np.ndarray) -> np.ndarray:
