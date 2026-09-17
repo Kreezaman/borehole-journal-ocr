@@ -126,7 +126,10 @@ class PaddleLocalOCR(OCRProvider):
         if crop_rgb.size == 0:
             return [], []
         enhanced = _enhance_handwriting(crop_rgb)
-        scale = 2.5 if crop_rgb.shape[0] < 400 else 2.0
+        height, width = crop_rgb.shape[:2]
+        base_scale = 2.5 if height < 400 else 2.0
+        max_scale = 3800.0 / max(width, 1)
+        scale = max(1.0, min(base_scale, max_scale))
         enlarged = cv2.resize(enhanced, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         result = self.engine.predict(enlarged)
         texts: list[str] = []
