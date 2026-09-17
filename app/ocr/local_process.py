@@ -33,7 +33,6 @@ def run_local_ocr_process(
         environment = os.environ.copy()
         environment["PYTHONUTF8"] = "1"
         environment["PYTHONPATH"] = str(project_root)
-        environment.setdefault("PADDLE_PDX_MODEL_SOURCE", "BOS")
         environment["FLAGS_use_mkldnn"] = "0"
         environment["FLAGS_use_onednn"] = "0"
         command = [
@@ -45,7 +44,7 @@ def run_local_ocr_process(
             str(error_path),
             str(progress_path),
         ]
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        flags = 0  # раньше было CREATE_NO_WINDOW — временно отключено для диагностики
         started = time.monotonic()
         last_progress = ""
         with console_path.open("w", encoding="utf-8", errors="replace") as console_stream:
@@ -53,8 +52,8 @@ def run_local_ocr_process(
                 command,
                 cwd=project_root,
                 env=environment,
-                stdout=console_stream,
-                stderr=subprocess.STDOUT,
+                stdout=None,
+                stderr=None,,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
