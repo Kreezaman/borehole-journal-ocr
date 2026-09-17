@@ -106,10 +106,23 @@ class PaddleLocalOCR(OCRProvider):
                 setattr(rows[row_index], field_name, value)
 
         _emit(progress_callback, "Локальное OCR: распознавание подвала (10 из 10)…")
-        footer_box = (0, max(0, round(690 * y_scale)), width, min(height, round(870 * y_scale)))
-        footer_crop = _crop(aligned_rgb, footer_box)
-        footer_texts, footer_boxes = self._recognize_crop(footer_crop)
-        footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_box[1])
+footer_box = (0, max(0, round(690 * y_scale)), width, min(height, round(870 * y_scale)))
+footer_crop = _crop(aligned_rgb, footer_box)
+# Подвал самый широкий — разбиваем его на 3 горизонтальные части,
+# чтобы детектор не захлёбывался на полосе во всю ширину.
+footer_texts: list[str] = []
+footer_boxes: list[list[float]] = []
+chunks = 3
+chunk_w = footer_crop.shape[1] // chunks
+for _i in range(chunks):
+    cx1 = _i * chunk_w
+    cx2 = footer_crop.shape[1] if _i == chunks - 1 else (_i + 1) * chunk_w
+    piece = footer_crop[:, cx1:cx2]
+    piece_texts, piece_boxes = self._recognize_crop(piece)
+    for text, box in zip(piece_texts, piece_boxes):
+        footer_texts.append(text)
+        footer_boxes.append([box[0] + cx1, box[1], box[2] + cx1, box[3]])
+footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_box[1])
         footer_values = {
             name: _text_inside(footer_items, rect.pixels(width, height))
             for name, rect in FOOTER_RECTS.items()
