@@ -14,6 +14,12 @@ from PIL import Image
 from app.models import RecognizedPage
 
 
+def _log_dir() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "BoreholeJournalOCR"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def run_local_ocr_process(
     aligned_rgb: np.ndarray,
     timeout_seconds: int = 900,
@@ -27,7 +33,7 @@ def run_local_ocr_process(
         output_path = temp_dir / "result.json"
         error_path = temp_dir / "error.txt"
         progress_path = temp_dir / "progress.txt"
-        console_path = temp_dir / "console.txt"
+        console_path = _log_dir() / "worker_console.txt"
         Image.fromarray(aligned_rgb).save(input_path, format="PNG")
 
         environment = os.environ.copy()
@@ -35,6 +41,7 @@ def run_local_ocr_process(
         environment["PYTHONPATH"] = str(project_root)
         environment["FLAGS_use_mkldnn"] = "0"
         environment["FLAGS_use_onednn"] = "0"
+        environment["FLAGS_enable_pir_api"] = "0"
         command = [
             str(python_exe),
             "-m",
@@ -44,7 +51,7 @@ def run_local_ocr_process(
             str(error_path),
             str(progress_path),
         ]
-        flags = 0  # раньше было CREATE_NO_WINDOW — временно отключено для диагностики
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         started = time.monotonic()
         last_progress = ""
         with console_path.open("w", encoding="utf-8", errors="replace") as console_stream:
@@ -52,8 +59,8 @@ def run_local_ocr_process(
                 command,
                 cwd=project_root,
                 env=environment,
-                stdout=None,
-                stderr=None,,
+                stdout=console_stream,
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
