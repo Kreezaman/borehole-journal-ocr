@@ -85,7 +85,7 @@ def test_local_ocr_disables_onednn(monkeypatch) -> None:
     PaddleLocalOCR()
     assert received["enable_mkldnn"] is False
     assert received["device"] == "cpu"
-    assert received["text_recognition_model_name"] == "cyrillic_PP-OCRv5_mobile_rec"
+    assert received["text_recognition_model_name"] == "cyrillic_PP-OCRv5_server_rec"
 
 
 def test_interval_mapping_uses_template_scale() -> None:
