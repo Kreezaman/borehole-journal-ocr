@@ -9,12 +9,10 @@ from pydantic import BaseModel, Field, ValidationError
 from app.models import FooterData, HeaderData, JournalRow, RecognizedPage
 from app.ocr.base import OCRProvider
 
-
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 GEMINI_TIMEOUT_SECONDS = 120
 
 OCR_PROMPT = """Ты выполняешь OCR русского рукописного бурового журнала инженерно-геологических изысканий.
-
 Распознай приложенную страницу и верни данные строго по заданной JSON-схеме.
 
 Правила:
@@ -57,6 +55,7 @@ class GeminiCloudOCR(OCRProvider):
                 raise RuntimeError(
                     "Не установлен модуль google-genai. Повторно запустите install.bat."
                 ) from exc
+
             retry_options = types.HttpRetryOptions(attempts=0)
             http_options = types.HttpOptions(
                 timeout=GEMINI_TIMEOUT_SECONDS * 1000,
@@ -72,7 +71,11 @@ class GeminiCloudOCR(OCRProvider):
             retry_options.attempts = 0
         self.client = client
 
-    def recognize(self, aligned_rgb: np.ndarray, progress_callback=None) -> RecognizedPage:
+    def recognize(
+        self,
+        aligned_rgb: np.ndarray,
+        progress_callback=None,
+    ) -> RecognizedPage:
         _progress(progress_callback, "Этап 1 из 3: подготовка изображения…")
         image64 = base64.b64encode(_encode_jpeg(aligned_rgb)).decode("ascii")
         _progress(progress_callback, "Этап 2 из 3: запрос отправлен, Gemini распознаёт страницу…")
@@ -136,7 +139,9 @@ def _encode_jpeg(image: np.ndarray, limit_bytes: int = 18 * 1024 * 1024) -> byte
     quality = 94
     for _ in range(5):
         success, encoded = cv2.imencode(
-            ".jpg", current, [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            ".jpg",
+            current,
+            [int(cv2.IMWRITE_JPEG_QUALITY), quality],
         )
         if not success:
             break
