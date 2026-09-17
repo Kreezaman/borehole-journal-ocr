@@ -1,0 +1,17 @@
+.venv/
+build/
+dist/
+release/
+*.spec
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+*.pdf
+*.bjproj
+*.xlsx
+corrections.jsonl
+diagnostics.zip
+crash.log
+.env
