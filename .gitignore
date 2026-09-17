@@ -16,3 +16,6 @@ diagnostics.zip
 crash.log
 .env
 
+*.bak
+test_worker.py
+*.py.bak

@@ -70,3 +70,44 @@ def table_cell_rect(row: int, column: int) -> RectN:
 
 def template_path() -> Path:
     return Path(__file__).resolve().parent.parent / "assets" / "template.png"
+
+
+# Печатные подписи полей, которые PaddleOCR часто склеивает
+# с рукописным значением в один текстовый блок.
+PRINTED_LABELS = (
+    "Дата бурения (начало, окончание)",
+    "Дата бурения (начало,окончание)",
+    "(начало,окончание)",
+    "(начало, окончание)",
+    "Дата бурения",
+    "Специфический запах:",
+    "Наличие специфического запаха:",
+    "Наличие специфического запаха",
+    "Объект:",
+    "Объект",
+    "с.Ш.",
+    "с.ш.",
+    "с. Ш.",
+    "С.Ш.",
+    "в.д.",
+    "в. д.",
+    "В.Д.",
+    "Е в.д.",
+    "Ев.д.",
+)
+
+
+def clean_field_value(value: str) -> str:
+    """Убирает печатные подписи полей и мусорные символы."""
+    text = value
+    for label in PRINTED_LABELS:
+        text = text.replace(label, " ")
+    text = text.strip("_ ").strip()
+    text = " ".join(text.split())
+    # Если после чистки остались только одиночные буквы и нет цифр —
+    # значит OCR распознал только метки ("М", "Е", "с.Ш."), а значение пустое.
+    if not any(c.isdigit() for c in text):
+        letters_only = text.replace(" ", "")
+        if len(letters_only) <= 4:
+            return ""
+    return text

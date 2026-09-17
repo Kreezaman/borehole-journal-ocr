@@ -17,6 +17,7 @@ from app.core.layout import (
     TABLE_FIELDS,
     TABLE_X,
     TABLE_Y,
+    clean_field_value,
 )
 from app.models import FooterData, HeaderData, JournalRow, RecognizedPage
 from app.ocr.base import OCRProvider
@@ -24,8 +25,6 @@ from app.ocr.base import OCRProvider
 
 class PaddleLocalOCR(OCRProvider):
     def __init__(self):
-        # oneDNN в некоторых сборках PaddlePaddle под Windows падает на Intel CPU.
-        # Отключаем его и PIR API ДО импорта paddleocr.
         os.environ["FLAGS_use_mkldnn"] = "0"
         os.environ["FLAGS_use_onednn"] = "0"
         os.environ["FLAGS_enable_pir_api"] = "0"
@@ -71,7 +70,7 @@ class PaddleLocalOCR(OCRProvider):
         header_texts, header_boxes = self._recognize_crop(header_crop)
         header_items = _offset_items(header_texts, header_boxes, header_box[0], header_box[1])
         header_values = {
-            name: _text_inside(header_items, rect.pixels(width, height))
+            name: clean_field_value(_text_inside(header_items, rect.pixels(width, height)))
             for name, rect in HEADER_RECTS.items()
         }
 
@@ -111,8 +110,6 @@ class PaddleLocalOCR(OCRProvider):
         _emit(progress_callback, "Локальное OCR: распознавание подвала (10 из 10)…")
         footer_box = (0, max(0, round(690 * y_scale)), width, min(height, round(870 * y_scale)))
         footer_crop = _crop(aligned_rgb, footer_box)
-        # Подвал — самый широкий кусок. Режем на 3 части, чтобы детектор
-        # не захлёбывался на полосе во всю ширину страницы.
         footer_texts: list[str] = []
         footer_boxes: list[list[float]] = []
         chunks = 3
@@ -127,7 +124,7 @@ class PaddleLocalOCR(OCRProvider):
                 footer_boxes.append([box[0] + cx1, box[1], box[2] + cx1, box[3]])
         footer_items = _offset_items(footer_texts, footer_boxes, footer_box[0], footer_box[1])
         footer_values = {
-            name: _text_inside(footer_items, rect.pixels(width, height))
+            name: clean_field_value(_text_inside(footer_items, rect.pixels(width, height)))
             for name, rect in FOOTER_RECTS.items()
         }
 
@@ -210,7 +207,6 @@ def _text_inside(items: list[tuple[str, list[float]]], region: tuple[int, int, i
 
 
 def _enhance_handwriting(image_rgb: np.ndarray) -> np.ndarray:
-    """Increase contrast of faint pencil/pen strokes without hard binarization."""
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(gray)
     blurred = cv2.GaussianBlur(clahe, (0, 0), 1.0)

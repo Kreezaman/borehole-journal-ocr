@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self.aligned_cache: dict[int, np.ndarray] = {}
         self.recognition_baselines: dict[int, dict] = {}
         self.ocr_progress_dialog: OCRProgressDialog | None = None
+        self.active_workers: list = []
         template_rgb = np.asarray(Image.open(template_path()).convert("RGB"))
         self.aligner = PageAligner(template_rgb)
         self._build_ui()
@@ -413,6 +414,7 @@ class MainWindow(QMainWindow):
             )
             self.ocr_progress_dialog.start(message)
         worker = FunctionWorker(fn, with_progress=with_progress)
+        self.active_workers.append(worker)
 
         def accept_result(result: RecognizedPage) -> None:
             quality = self.project.pages[index].data.alignment_quality
@@ -437,6 +439,8 @@ class MainWindow(QMainWindow):
         def finish_recognition() -> None:
             self._finish_progress_dialog()
             self._set_busy(False, "Распознавание завершено")
+            if worker in self.active_workers:
+                self.active_workers.remove(worker)
 
         worker.signals.progress.connect(show_progress)
         worker.signals.error.connect(show_error)

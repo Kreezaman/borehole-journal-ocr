@@ -19,6 +19,10 @@ class FunctionWorker(QRunnable):
         self.fn = fn
         self.with_progress = with_progress
         self.signals = WorkerSignals()
+        # Не даём QThreadPool удалять объект автоматически: иначе
+        # объект может быть уничтожен до того, как GUI-поток
+        # обработает отправленные сигналы.
+        self.setAutoDelete(False)
 
     @Slot()
     def run(self) -> None:
