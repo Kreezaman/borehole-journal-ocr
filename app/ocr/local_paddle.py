@@ -24,27 +24,34 @@ from app.ocr.base import OCRProvider
 
 class PaddleLocalOCR(OCRProvider):
     def __init__(self):
-        # oneDNN in some Windows PaddlePaddle builds crashes on Intel CPUs with
-        # ConvertPirAttribute2RuntimeAttribute/DoubleAttribute. Disable it both
-        # at framework and pipeline level before importing PaddleOCR.
         os.environ["FLAGS_use_mkldnn"] = "0"
         os.environ["FLAGS_use_onednn"] = "0"
+        try:
+            import paddle
+            paddle.set_flags({
+                "FLAGS_use_mkldnn": False,
+                "FLAGS_use_onednn": False,
+            })
+        except Exception:
+            pass
+
         try:
             from paddleocr import PaddleOCR
         except ImportError as exc:
             raise RuntimeError(
                 "Локальный OCR не установлен. Запустите «Установить_локальный_OCR.bat»."
             ) from exc
+
         self.engine = PaddleOCR(
             lang="ru",
             text_detection_model_name="PP-OCRv5_server_det",
-            text_recognition_model_name="cyrillic_PP-OCRv5_server_rec",
+            text_recognition_model_name="cyrillic_PP-OCRv5_mobile_rec",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=True,
             enable_mkldnn=False,
             device="cpu",
-)
+        )
 
     def recognize(
         self,
