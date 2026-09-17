@@ -51,7 +51,14 @@ def run_local_ocr_process(
             str(error_path),
             str(progress_path),
         ]
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        if sys.platform == "win32":
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    flags = 0
+else:
+    startupinfo = None
+    flags = 0
         started = time.monotonic()
         last_progress = ""
         with console_path.open("w", encoding="utf-8", errors="replace") as console_stream:
@@ -65,7 +72,8 @@ def run_local_ocr_process(
                 encoding="utf-8",
                 errors="replace",
                 creationflags=flags,
-            )
+                startupinfo=startupinfo,   # <-- добавь эту строку
+)
             while process.poll() is None:
                 if output_path.exists():
                     try:
