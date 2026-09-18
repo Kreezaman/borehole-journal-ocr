@@ -40,7 +40,7 @@ from app.ocr.local_process import run_local_ocr_process
 from app.ui.image_view import ImageView
 from app.ui.ocr_progress_dialog import OCRProgressDialog
 from app.ui.settings_dialog import SettingsDialog, get_api_key, get_gemini_model
-from app.ui.workers import FunctionWorker
+from app.ui.workers import FunctionWorker, SequentialWorker
 
 
 TABLE_HEADERS = [
@@ -95,8 +95,10 @@ class MainWindow(QMainWindow):
         self.recognition_baselines: dict[int, dict] = {}
         self.ocr_progress_dialog: OCRProgressDialog | None = None
         self.active_workers: list = []
-        template_rgb = np.asarray(Image.open(template_path()).convert("RGB"))
-        self.aligner = PageAligner(template_rgb)
+        self.batch_worker: SequentialWorker | None = None
+        self._batch_error: tuple[int, str] | None = None
+        self.template_rgb = np.asarray(Image.open(template_path()).convert("RGB"))
+        self.aligner = PageAligner(self.template_rgb)
         self._build_ui()
         self._build_toolbar()
         self._apply_style()
@@ -236,6 +238,7 @@ class MainWindow(QMainWindow):
             ("Сохранить проект", self.save_current_project),
             ("Локальное OCR", self.recognize_local),
             ("Gemini OCR", self.recognize_cloud),
+            ("Gemini OCR: все страницы", self.recognize_cloud_all),
             ("Проверить", self.run_validation),
             ("Экспорт в Excel", self.export_excel),
             ("Настройки", self.open_settings),
@@ -246,7 +249,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(slot)
             toolbar.addAction(action)
             self.busy_actions.append(action)
-            if text in {"Сохранить проект", "Gemini OCR", "Проверить"}:
+            if text in {"Сохранить проект", "Gemini OCR: все страницы", "Проверить"}:
                 toolbar.addSeparator()
 
     def _apply_style(self) -> None:
@@ -422,6 +425,147 @@ class MainWindow(QMainWindow):
             show_progress_dialog=True,
         )
 
+    def recognize_cloud_all(self) -> None:
+        if not self.project.pages:
+            QMessageBox.information(
+                self,
+                "Нет страниц",
+                "Сначала откройте PDF или изображения.",
+            )
+            return
+        key = get_api_key()
+        if not key:
+            QMessageBox.information(
+                self,
+                "Нужен API-ключ",
+                "Откройте «Настройки» и сохраните Gemini API-ключ.",
+            )
+            return
+
+        self._commit_current_page()
+        model = get_gemini_model()
+        page_indices = list(range(len(self.project.pages)))
+        loader_cache: dict[str, DocumentLoader] = {}
+        provider_holder: list[GeminiCloudOCR] = []
+        aligner = PageAligner(self.template_rgb)
+
+        def recognize_page(index: int, progress) -> RecognizedPage:
+            if not provider_holder:
+                provider_holder.append(GeminiCloudOCR(key, model))
+            project_page = self.project.pages[index]
+            loader = loader_cache.get(project_page.source_path)
+            if loader is None:
+                loader = DocumentLoader(project_page.source_path)
+                loader_cache[project_page.source_path] = loader
+            raw = loader.render_page(project_page.source_page)
+            aligned = aligner.align(raw)
+            result = provider_holder[0].recognize(
+                aligned.image,
+                progress_callback=progress,
+            )
+            result.alignment_quality = aligned.quality
+            return result
+
+        def close_batch_loaders() -> None:
+            for loader in loader_cache.values():
+                loader.close()
+            loader_cache.clear()
+
+        self._batch_error = None
+        self._set_busy(True, "Gemini OCR: подготовка пакетной обработки…")
+        dialog = OCRProgressDialog(
+            self,
+            timeout_seconds=None,
+            allow_stop=True,
+        )
+        self.ocr_progress_dialog = dialog
+        worker = SequentialWorker(
+            page_indices,
+            recognize_page,
+            cleanup=close_batch_loaders,
+        )
+        self.batch_worker = worker
+        self.active_workers.append(worker)
+        dialog.stop_requested.connect(worker.request_stop)
+
+        def page_started(index: int, position: int, total: int) -> None:
+            source_name = self.project.pages[index].source_name
+            dialog.set_batch_page(position, total, position - 1, source_name)
+            dialog.set_stage(
+                f"Страница {position} из {total}: подготовка изображения…"
+            )
+            self.statusBar().showMessage(
+                f"Gemini OCR: страница {position} из {total}"
+            )
+
+        def page_result(
+            index: int,
+            result: RecognizedPage,
+            position: int,
+            _total: int,
+        ) -> None:
+            result.rows = result.normalized_rows()
+            self.project.pages[index].data = result
+            self.recognition_baselines[index] = result.model_dump()
+            self.project.touch()
+            dialog.mark_batch_completed(position)
+            dialog.set_stage(f"✓ Страница {position} распознана и добавлена в проект.")
+            if self.current_index == index:
+                self._populate_form(result)
+                self.run_validation(show_dialog=False)
+
+        def show_progress(text: str) -> None:
+            self.statusBar().showMessage(text)
+            dialog.set_stage(text)
+
+        def page_error(index: int, text: str, position: int, total: int) -> None:
+            self._batch_error = (index, text)
+            dialog.set_stage(
+                f"Ошибка на странице {position} из {total}. Пакетная обработка остановлена."
+            )
+
+        def finish_batch(completed: int, stopped: bool) -> None:
+            self._finish_progress_dialog()
+            if worker in self.active_workers:
+                self.active_workers.remove(worker)
+            self.batch_worker = None
+            self._set_busy(False, f"Пакетное OCR завершено: {completed} страниц")
+
+            if self._batch_error is not None:
+                failed_index, error_text = self._batch_error
+                failed_page = self.project.pages[failed_index].source_name
+                QMessageBox.critical(
+                    self,
+                    "Пакетное OCR остановлено",
+                    f"Обработано страниц: {completed} из {len(page_indices)}.\n"
+                    f"Ошибка на странице «{failed_page}»:\n{error_text}\n\n"
+                    "Результаты уже обработанных страниц сохранены в открытом проекте. "
+                    "Нажмите «Сохранить проект», чтобы записать их на диск.",
+                )
+            elif stopped:
+                QMessageBox.information(
+                    self,
+                    "Пакетное OCR остановлено",
+                    f"Обработано страниц: {completed} из {len(page_indices)}.\n"
+                    "Результаты находятся в открытом проекте.",
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Пакетное OCR завершено",
+                    f"Успешно обработано страниц: {completed}.",
+                )
+
+        worker.signals.item_started.connect(page_started)
+        worker.signals.item_result.connect(page_result)
+        worker.signals.progress.connect(show_progress)
+        worker.signals.error.connect(page_error)
+        worker.signals.finished.connect(finish_batch)
+        dialog.start(
+            f"Пакетное Gemini OCR: подготовка {len(page_indices)} страниц…"
+        )
+        self.thread_pool.start(worker)
+
     def _start_recognition(
         self,
         message: str,
@@ -594,6 +738,14 @@ class MainWindow(QMainWindow):
         self.loaders.clear()
 
     def closeEvent(self, event):  # noqa: N802
+        if self.batch_worker is not None:
+            QMessageBox.information(
+                self,
+                "Идёт пакетное OCR",
+                "Сначала нажмите «Остановить после текущей страницы» и дождитесь завершения запроса.",
+            )
+            event.ignore()
+            return
         self._close_loaders()
         event.accept()
 

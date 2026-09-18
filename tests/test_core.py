@@ -15,6 +15,7 @@ from app.core.project_io import load_project, save_project
 from app.models import HeaderData, JournalProject, JournalRow, ProjectPage, RecognizedPage
 from app.ocr.cloud_gemini import GeminiCloudOCR
 from app.ocr.local_paddle import PaddleLocalOCR
+from app.ui.workers import SequentialWorker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +206,87 @@ def test_gemini_rechecks_only_a_suspicious_cell() -> None:
 
 def test_project_still_accepts_legacy_cloud_mode() -> None:
     assert RecognizedPage(recognition_mode="cloud").recognition_mode == "cloud"
+
+
+def test_sequential_worker_processes_items_in_order() -> None:
+    started: list[tuple[int, int, int]] = []
+    results: list[tuple[int, int, int, int]] = []
+    finished: list[tuple[int, bool]] = []
+    cleaned: list[bool] = []
+
+    worker = SequentialWorker(
+        [3, 5, 8],
+        lambda item, progress: (progress(f"обработка {item}"), item * 2)[1],
+        cleanup=lambda: cleaned.append(True),
+    )
+    worker.signals.item_started.connect(
+        lambda item, position, total: started.append((item, position, total))
+    )
+    worker.signals.item_result.connect(
+        lambda item, result, position, total: results.append(
+            (item, result, position, total)
+        )
+    )
+    worker.signals.finished.connect(
+        lambda completed, stopped: finished.append((completed, stopped))
+    )
+
+    worker.run()
+
+    assert started == [(3, 1, 3), (5, 2, 3), (8, 3, 3)]
+    assert results == [(3, 6, 1, 3), (5, 10, 2, 3), (8, 16, 3, 3)]
+    assert finished == [(3, False)]
+    assert cleaned == [True]
+
+
+def test_sequential_worker_stops_between_items() -> None:
+    processed: list[int] = []
+    finished: list[tuple[int, bool]] = []
+    worker = SequentialWorker([0, 1, 2], lambda item, _progress: item)
+
+    def accept_result(item, _result, _position, _total) -> None:
+        processed.append(item)
+        worker.request_stop()
+
+    worker.signals.item_result.connect(accept_result)
+    worker.signals.finished.connect(
+        lambda completed, stopped: finished.append((completed, stopped))
+    )
+
+    worker.run()
+
+    assert processed == [0]
+    assert finished == [(1, True)]
+
+
+def test_sequential_worker_keeps_completed_results_before_error() -> None:
+    results: list[int] = []
+    errors: list[tuple[int, str, int, int]] = []
+    finished: list[tuple[int, bool]] = []
+
+    def process(item: int, _progress) -> int:
+        if item == 2:
+            raise RuntimeError("quota")
+        return item * 10
+
+    worker = SequentialWorker([1, 2, 3], process)
+    worker.signals.item_result.connect(
+        lambda _item, result, _position, _total: results.append(result)
+    )
+    worker.signals.error.connect(
+        lambda item, message, position, total: errors.append(
+            (item, message, position, total)
+        )
+    )
+    worker.signals.finished.connect(
+        lambda completed, stopped: finished.append((completed, stopped))
+    )
+
+    worker.run()
+
+    assert results == [10]
+    assert errors == [(2, "RuntimeError: quota", 2, 3)]
+    assert finished == [(1, False)]
 
 
 def _gemini_result_json(

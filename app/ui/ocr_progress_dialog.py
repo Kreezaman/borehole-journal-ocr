@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QElapsedTimer, QTimer, Qt
+from PySide6.QtCore import QElapsedTimer, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QLabel,
     QPlainTextEdit,
     QProgressBar,
+    QPushButton,
     QVBoxLayout,
 )
 
@@ -13,7 +14,14 @@ from PySide6.QtWidgets import (
 class OCRProgressDialog(QDialog):
     """Visible heartbeat for OCR APIs that do not report percentage progress."""
 
-    def __init__(self, parent=None, timeout_seconds: int = 120):
+    stop_requested = Signal()
+
+    def __init__(
+        self,
+        parent=None,
+        timeout_seconds: int | None = 120,
+        allow_stop: bool = False,
+    ):
         super().__init__(parent)
         self.timeout_seconds = timeout_seconds
         self._last_message = ""
@@ -30,6 +38,9 @@ class OCRProgressDialog(QDialog):
 
         self.stage_label = QLabel("Подготовка изображения…")
         self.stage_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.page_label = QLabel()
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.hide()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
@@ -44,15 +55,20 @@ class OCRProgressDialog(QDialog):
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(30)
         self.log.setFixedHeight(105)
+        self.stop_button = QPushButton("Остановить после текущей страницы")
+        self.stop_button.clicked.connect(self._request_stop)
+        self.stop_button.setVisible(allow_stop)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
         layout.addWidget(self.stage_label)
+        layout.addWidget(self.page_label)
         layout.addWidget(self.progress)
         layout.addWidget(self.time_label)
         layout.addWidget(self.note)
         layout.addWidget(self.log)
+        layout.addWidget(self.stop_button)
 
     def start(self, initial_message: str) -> None:
         self._elapsed.start()
@@ -75,6 +91,35 @@ class OCRProgressDialog(QDialog):
             self._last_wait_attempt = attempt
         self.log.appendPlainText(f"{_clock(seconds)}  {message}")
 
+    def set_batch_page(
+        self,
+        position: int,
+        total: int,
+        completed: int,
+        source_name: str,
+    ) -> None:
+        self.page_label.show()
+        self.page_label.setText(
+            f"Страница {position} из {total} · {source_name}"
+        )
+        self.progress.setRange(0, total)
+        self.progress.setValue(completed)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("Обработано: %v из %m")
+        self.note.setText(
+            "Страницы обрабатываются последовательно, чтобы бережно использовать "
+            "бесплатный лимит Gemini. Остановка выполняется после текущей страницы."
+        )
+
+    def mark_batch_completed(self, completed: int) -> None:
+        self.progress.setValue(completed)
+
+    def _request_stop(self) -> None:
+        self.stop_button.setEnabled(False)
+        self.stop_button.setText("Остановка после текущей страницы…")
+        self.set_stage("Запрошена остановка. Текущая страница будет завершена.")
+        self.stop_requested.emit()
+
     def finish(self) -> None:
         self._timer.stop()
         super().accept()
@@ -82,6 +127,9 @@ class OCRProgressDialog(QDialog):
 
     def _update_time(self) -> None:
         elapsed = max(0, self._elapsed.elapsed() // 1000)
+        if self.timeout_seconds is None:
+            self.time_label.setText(f"Общее время: {_clock(elapsed)}")
+            return
         remaining = max(0, self.timeout_seconds - elapsed)
         self.time_label.setText(
             f"Прошло: {_clock(elapsed)}    •    "
