@@ -100,30 +100,31 @@ def test_gemini_ocr_uses_inline_image_and_structured_output() -> None:
     received: dict = {}
     progress: list[str] = []
 
-    class FakeInteractions:
-        def create(self, **kwargs):
+    class FakeModels:
+        def generate_content(self, **kwargs):
             received.update(kwargs)
-            return SimpleNamespace(
-                output_text=_gemini_result_json()
-            )
+            return SimpleNamespace(text=_gemini_result_json())
 
-    client = SimpleNamespace(interactions=FakeInteractions())
+    client = SimpleNamespace(models=FakeModels())
     image = np.full((80, 120, 3), 255, dtype=np.uint8)
     result = GeminiCloudOCR("test-key", client=client).recognize(image, progress.append)
 
     assert received["model"] == "gemini-3.1-flash-lite"
-    images = [part for part in received["input"] if part["type"] == "image"]
+    images = [part for part in received["contents"] if getattr(part, "inline_data", None)]
     assert len(images) == 5
-    assert images[0]["resolution"] == "medium"
-    assert all(image["resolution"] == "high" for image in images[1:])
-    assert all(image["mime_type"] == "image/jpeg" for image in images)
-    assert received["generation_config"]["thinking_level"] == "minimal"
-    assert received["response_format"]["mime_type"] == "application/json"
+    assert images[0].media_resolution.level.value == "MEDIA_RESOLUTION_MEDIUM"
+    assert all(
+        image.media_resolution.level.value == "MEDIA_RESOLUTION_HIGH"
+        for image in images[1:]
+    )
+    assert all(image.inline_data.mime_type == "image/jpeg" for image in images)
+    assert received["config"]["thinking_config"]["thinking_level"] == "minimal"
+    assert received["config"]["response_mime_type"] == "application/json"
     assert result.header.borehole_no == "2"
     assert result.rows[0].description == "ПРС"
     assert len(result.rows) == 19
     assert result.recognition_mode == "gemini"
-    schema = received["response_format"]["schema"]
+    schema = received["config"]["response_json_schema"]
     assert "header" in schema["required"]
     assert progress[0].startswith("Этап 1 из 5")
     assert progress[-1].startswith("Этап 5 из 5")
@@ -139,15 +140,15 @@ def test_gemini_retries_a_temporary_rate_limit_with_visible_countdown() -> None:
         response = SimpleNamespace(headers={"retry-after": "1"})
         details = {"error": {"status": "RESOURCE_EXHAUSTED"}}
 
-    class FakeInteractions:
-        def create(self, **_kwargs):
+    class FakeModels:
+        def generate_content(self, **_kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
                 raise RateLimitError("429 RESOURCE_EXHAUSTED")
-            return SimpleNamespace(output_text=_gemini_result_json())
+            return SimpleNamespace(text=_gemini_result_json())
 
-    client = SimpleNamespace(interactions=FakeInteractions())
+    client = SimpleNamespace(models=FakeModels())
     image = np.full((80, 120, 3), 255, dtype=np.uint8)
     GeminiCloudOCR("test-key", client=client, sleep_fn=sleeps.append).recognize(
         image, progress.append
@@ -161,12 +162,12 @@ def test_gemini_retries_a_temporary_rate_limit_with_visible_countdown() -> None:
 def test_gemini_rechecks_only_a_suspicious_cell() -> None:
     requests: list[dict] = []
 
-    class FakeInteractions:
-        def create(self, **kwargs):
+    class FakeModels:
+        def generate_content(self, **kwargs):
             requests.append(kwargs)
             if len(requests) == 1:
                 return SimpleNamespace(
-                    output_text=_gemini_result_json(
+                    text=_gemini_result_json(
                         depth_to="0,7",
                         warnings=[
                             {
@@ -178,7 +179,7 @@ def test_gemini_rechecks_only_a_suspicious_cell() -> None:
                     )
                 )
             return SimpleNamespace(
-                output_text=json.dumps(
+                text=json.dumps(
                     {
                         "results": [
                             {
@@ -193,12 +194,14 @@ def test_gemini_rechecks_only_a_suspicious_cell() -> None:
                 )
             )
 
-    client = SimpleNamespace(interactions=FakeInteractions())
+    client = SimpleNamespace(models=FakeModels())
     image = np.full((1790, 2586, 3), 255, dtype=np.uint8)
     result = GeminiCloudOCR("test-key", client=client).recognize(image)
 
     assert len(requests) == 2
-    review_images = [part for part in requests[1]["input"] if part["type"] == "image"]
+    review_images = [
+        part for part in requests[1]["contents"] if getattr(part, "inline_data", None)
+    ]
     assert len(review_images) == 1
     assert result.rows[0].depth_to == "0,1"
     assert result.ocr_warnings == []

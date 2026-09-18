@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import re
 import time
 from collections.abc import Callable
@@ -243,19 +242,21 @@ class GeminiCloudOCR(OCRProvider):
         progress_callback,
         max_attempts: int,
     ):
+        contents = _generate_content_parts(input_parts)
         for attempt in range(1, max_attempts + 1):
             try:
-                return self.client.interactions.create(
+                # Gemini 3.1 Flash-Lite documents multimodal structured output
+                # through generateContent.  Interactions accepted the SDK
+                # objects locally but rejected inline image data with a generic
+                # 400 INVALID_ARGUMENT response.
+                return self.client.models.generate_content(
                     model=self.model,
-                    input=input_parts,
-                    generation_config={
-                        "thinking_level": "minimal",
+                    contents=contents,
+                    config={
                         "max_output_tokens": 8192,
-                    },
-                    response_format={
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": schema,
+                        "thinking_config": {"thinking_level": "minimal"},
+                        "response_mime_type": "application/json",
+                        "response_json_schema": schema,
                     },
                 )
             except Exception as exc:
@@ -307,17 +308,48 @@ def _primary_input(image: np.ndarray) -> list[dict]:
 
 
 def _image_input(image: np.ndarray, *, resolution: str) -> dict:
-    image64 = base64.b64encode(_encode_jpeg(image)).decode("ascii")
     return {
         "type": "image",
-        "data": image64,
+        "data": _encode_jpeg(image),
         "mime_type": "image/jpeg",
         "resolution": resolution,
     }
 
 
+def _generate_content_parts(input_parts: list[dict]) -> list:
+    """Convert internal OCR parts to supported generateContent SDK parts."""
+    try:
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError(
+            "Не установлен модуль google-genai. Повторно запустите install.bat."
+        ) from exc
+
+    resolution_levels = {
+        "medium": types.PartMediaResolutionLevel.MEDIA_RESOLUTION_MEDIUM,
+        "high": types.PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH,
+    }
+    contents = []
+    for part in input_parts:
+        if part["type"] == "text":
+            contents.append(part["text"])
+            continue
+        contents.append(
+            types.Part.from_bytes(
+                data=part["data"],
+                mime_type=part["mime_type"],
+                media_resolution=resolution_levels[part["resolution"]],
+            )
+        )
+    return contents
+
+
 def _parse_response(response, model_type):
-    output_text = getattr(response, "output_text", "") or ""
+    output_text = (
+        getattr(response, "text", "")
+        or getattr(response, "output_text", "")
+        or ""
+    )
     if not output_text.strip():
         raise RuntimeError("Gemini не вернул результат распознавания.")
     try:
@@ -443,6 +475,12 @@ def _mapped_error(exc: Exception) -> Exception:
         )
     if "401" in message or "403" in message or "API_KEY" in message.upper():
         return RuntimeError("Gemini отклонил API-ключ. Проверьте ключ в настройках программы.")
+    if getattr(exc, "code", None) == 400 or "INVALID_ARGUMENT" in message.upper():
+        return RuntimeError(
+            "Gemini отклонил параметры запроса (400 INVALID_ARGUMENT). "
+            "Обновите программу до последней версии; если ошибка повторится, "
+            "проверьте выбранную модель в настройках."
+        )
     return RuntimeError(f"Ошибка Gemini OCR: {message or type(exc).__name__}")
 
 
